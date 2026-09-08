@@ -1,0 +1,65 @@
+# CI for ${{ values.name }}, built from the platform's reusable workflows.
+# See https://github.com/henryekeocha/jenkins-to-actions-migration-platform/blob/main/docs/migration-guide.md
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: ${{ values.name }}-${{ '${{ github.ref }}' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    uses: henryekeocha/jenkins-to-actions-migration-platform/.github/workflows/reusable-build.yml@main
+    with:
+      service: ${{ values.name }}
+      go-version: "${{ values.goVersion }}"
+
+  test:
+    needs: build
+    uses: henryekeocha/jenkins-to-actions-migration-platform/.github/workflows/reusable-test.yml@main
+    with:
+      go-version: "${{ values.goVersion }}"
+
+  image:
+    needs: [build, test]
+    uses: henryekeocha/jenkins-to-actions-migration-platform/.github/workflows/reusable-image.yml@main
+    with:
+      service: ${{ values.name }}
+      push: ${{ '${{ github.event_name != ''pull_request'' }}' }}
+
+  deploy-staging:
+    needs: [build, image]
+    if: ${{ '${{ github.ref == ''refs/heads/main'' }}' }}
+    uses: henryekeocha/jenkins-to-actions-migration-platform/.github/workflows/reusable-deploy.yml@main
+    with:
+      service: ${{ values.name }}
+      environment: staging
+      image-tag: ${{ '${{ needs.build.outputs.short-sha }}' }}
+      health-url: ${{ values.healthUrlStaging }}
+    secrets:
+      KUBECONFIG_B64: ${{ '${{ secrets.KUBECONFIG_B64 }}' }}
+
+  deploy-production:
+    needs: [build, deploy-staging]
+    if: ${{ '${{ github.event_name == ''workflow_dispatch'' && inputs.environment == ''production'' }}' }}
+    uses: henryekeocha/jenkins-to-actions-migration-platform/.github/workflows/reusable-deploy.yml@main
+    with:
+      service: ${{ values.name }}
+      environment: production
+      image-tag: ${{ '${{ needs.build.outputs.short-sha }}' }}
+    secrets:
+      KUBECONFIG_B64: ${{ '${{ secrets.KUBECONFIG_B64 }}' }}

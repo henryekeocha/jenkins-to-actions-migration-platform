@@ -1,0 +1,111 @@
+# Backstage Software Template: a Go service that starts on GitHub Actions using the reusable
+# workflows in this repository. Schema: scaffolder.backstage.io/v1beta3 (current as of the
+# Backstage docs on 2026-09-08; validated by hack/validate-backstage.py against the upstream
+# JSON schema).
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: go-service-github-actions
+  title: Go service on GitHub Actions
+  description: >-
+    Scaffold a Go HTTP service with a CI pipeline built from the platform's reusable GitHub
+    Actions workflows (build, test, image, deploy), a Helm chart, and a catalog entry.
+    This is the migrated path; no Jenkins job is created.
+  tags: [go, github-actions, recommended]
+spec:
+  owner: group:default/platform-team
+  type: service
+
+  parameters:
+    - title: Service
+      required: [name, owner]
+      properties:
+        name:
+          title: Name
+          type: string
+          description: Lowercase, hyphenated. Becomes the repo name, binary name and Helm release.
+          pattern: '^[a-z][a-z0-9-]{2,40}$'
+          ui:autofocus: true
+        description:
+          title: Description
+          type: string
+          default: A Go HTTP service.
+        owner:
+          title: Owner
+          type: string
+          description: Team that owns the service.
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+
+    - title: Repository
+      required: [repoUrl]
+      properties:
+        repoUrl:
+          title: Repository location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts: [github.com]
+        goVersion:
+          title: Go version
+          type: string
+          default: "1.22"
+          enum: ["1.22", "1.23", "1.24"]
+        healthUrlStaging:
+          title: Staging health URL
+          type: string
+          description: Smoke-tested after each staging deploy. Leave blank to skip.
+          default: ""
+
+  steps:
+    - id: fetch
+      name: Fetch skeleton
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          goVersion: ${{ parameters.goVersion }}
+          healthUrlStaging: ${{ parameters.healthUrlStaging }}
+          repoUrl: ${{ parameters.repoUrl }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+
+    - id: publish
+      name: Publish to GitHub
+      action: publish:github
+      input:
+        repoUrl: ${{ parameters.repoUrl }}
+        description: ${{ parameters.description }}
+        defaultBranch: main
+        repoVisibility: private
+        deleteBranchOnMerge: true
+        requiredApprovingReviewCount: 1
+        protectDefaultBranch: true
+
+    - id: register
+      name: Register in the catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+    - id: log
+      name: Next steps
+      action: debug:log
+      input:
+        message: >-
+          Created ${{ parameters.name }}. Create the `staging` and `production` environments in
+          the new repo with a KUBECONFIG_B64 secret each, and add required reviewers on
+          `production`; that is the approval gate.
+
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps.publish.output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}

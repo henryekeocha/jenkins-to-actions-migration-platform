@@ -1,0 +1,8 @@
+replicaCount: 1
+image:
+  repository: ghcr.io/${{ values.destination.owner }}/${{ values.name }}
+  tag: latest
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi

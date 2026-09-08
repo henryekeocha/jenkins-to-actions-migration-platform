@@ -1,0 +1,29 @@
+# Catalog entry for this repository plus a Location that registers the software template.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: jenkins-to-actions-migration-platform
+  description: >-
+    Reusable GitHub Actions workflows, a Jenkinsfile migration analyzer, an Argo workflow
+    notifier controller, and Crossplane/Terraform baselines for migrating CI/CD off Jenkins and Tekton.
+  annotations:
+    github.com/project-slug: henryekeocha/jenkins-to-actions-migration-platform
+    backstage.io/techdocs-ref: dir:.
+  tags: [platform, github-actions, migration]
+  links:
+    - url: https://github.com/henryekeocha/jenkins-to-actions-migration-platform/blob/main/docs/migration-guide.md
+      title: Migration guide
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:default/platform-team
+---
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: jenkins-to-actions-migration-platform-templates
+  description: Software templates provided by the migration platform.
+spec:
+  type: url
+  targets:
+    - https://github.com/henryekeocha/jenkins-to-actions-migration-platform/blob/main/backstage/template/template.yaml
