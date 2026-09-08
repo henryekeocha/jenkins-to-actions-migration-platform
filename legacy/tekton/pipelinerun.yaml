@@ -1,0 +1,32 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: orders-api-run-
+spec:
+  pipelineRef:
+    name: orders-api-build-test-deploy
+  timeouts:
+    pipeline: 45m
+  params:
+    - name: repo-url
+      value: https://github.com/example-org/orders-api.git
+    - name: revision
+      value: main
+    - name: image
+      value: ghcr.io/example-org/orders-api
+    - name: environment
+      value: staging
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 2Gi
+    - name: docker-credentials
+      secret:
+        secretName: ghcr-push
+    - name: kubeconfig
+      secret:
+        secretName: kubeconfig-staging

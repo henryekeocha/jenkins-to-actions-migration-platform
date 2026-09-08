@@ -1,0 +1,30 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: kaniko-build-push
+spec:
+  description: Build and push with kaniko so no Docker socket is needed (unlike the Jenkins agent).
+  params:
+    - name: image
+      type: string
+    - name: dockerfile
+      type: string
+      default: ./Dockerfile
+  workspaces:
+    - name: source
+    - name: dockerconfig
+      description: Must contain a config.json / .dockerconfigjson key
+  results:
+    - name: digest
+  steps:
+    - name: build-and-push
+      image: gcr.io/kaniko-project/executor:v1.23.2
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: DOCKER_CONFIG
+          value: $(workspaces.dockerconfig.path)
+      args:
+        - --dockerfile=$(params.dockerfile)
+        - --context=$(workspaces.source.path)
+        - --destination=$(params.image)
+        - --digest-file=$(results.digest.path)

@@ -1,0 +1,15 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: go-lint
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: golangci/golangci-lint:v1.59
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -eu
+        golangci-lint run ./...

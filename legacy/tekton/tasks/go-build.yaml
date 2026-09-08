@@ -1,0 +1,18 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: go-build
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: build
+      image: golang:1.22-bookworm
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: GOFLAGS
+          value: -mod=readonly
+      script: |
+        #!/bin/sh
+        set -eu
+        go build -o bin/orders-api ./cmd/orders-api

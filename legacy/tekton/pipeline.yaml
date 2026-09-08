@@ -1,0 +1,144 @@
+# Tekton equivalent of legacy/jenkins/Jenkinsfile for the orders-api service.
+#
+# API version: tekton.dev/v1 (Pipeline/Task/PipelineRun have been v1 since Tekton Pipelines 0.44).
+# Tasks live in ./tasks and are referenced by name; a PipelineRun that binds workspaces and params
+# is in ./pipelinerun.yaml.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: orders-api-build-test-deploy
+  labels:
+    app.kubernetes.io/part-of: orders-api
+spec:
+  description: Build, test, containerise and deploy orders-api. Mirrors the Jenkins pipeline stage for stage.
+
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+      default: main
+    - name: image
+      type: string
+      description: Fully-qualified image name without tag, e.g. ghcr.io/example-org/orders-api
+    - name: environment
+      type: string
+      default: staging
+      description: staging or production
+    - name: skip-tests
+      type: string
+      default: "false"
+
+  workspaces:
+    - name: source
+    - name: docker-credentials
+      description: Secret with .dockerconfigjson for pushing to the registry
+    - name: kubeconfig
+      description: Secret containing a kubeconfig for the target cluster
+
+  tasks:
+    - name: clone
+      taskRef:
+        name: git-clone
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: build
+      runAfter: [clone]
+      taskRef:
+        name: go-build
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Jenkins `parallel { Unit; Lint }` -> two tasks with the same runAfter.
+    - name: unit-test
+      runAfter: [build]
+      when:
+        - input: $(params.skip-tests)
+          operator: notin
+          values: ["true"]
+      taskRef:
+        name: go-test
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: lint
+      runAfter: [build]
+      when:
+        - input: $(params.skip-tests)
+          operator: notin
+          values: ["true"]
+      taskRef:
+        name: go-lint
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: image
+      runAfter: [unit-test, lint]
+      taskRef:
+        name: kaniko-build-push
+      params:
+        - name: image
+          value: $(params.image):$(tasks.clone.results.commit)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: docker-credentials
+
+    - name: deploy-staging
+      runAfter: [image]
+      taskRef:
+        name: helm-deploy
+      params:
+        - name: environment
+          value: staging
+        - name: image-tag
+          value: $(tasks.clone.results.commit)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: kubeconfig
+          workspace: kubeconfig
+
+    # Jenkins `input` has no Tekton equivalent. The usual workaround is a separate PipelineRun for
+    # production triggered from a release process; the `when` here is the closest in-pipeline gate.
+    - name: deploy-production
+      runAfter: [deploy-staging]
+      when:
+        - input: $(params.environment)
+          operator: in
+          values: ["production"]
+      taskRef:
+        name: helm-deploy
+      params:
+        - name: environment
+          value: production
+        - name: image-tag
+          value: $(tasks.clone.results.commit)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: kubeconfig
+          workspace: kubeconfig
+
+  # Jenkins `post { always / success / failure }` -> finally tasks, which run regardless of outcome
+  # and can read $(tasks.status) to decide what to send.
+  finally:
+    - name: notify
+      taskRef:
+        name: slack-notify
+      params:
+        - name: status
+          value: $(tasks.status)
+        - name: pipeline-run
+          value: $(context.pipelineRun.name)

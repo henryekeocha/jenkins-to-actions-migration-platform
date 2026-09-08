@@ -1,0 +1,32 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: helm-deploy
+spec:
+  description: Equivalent of the deployHelm shared-library step.
+  params:
+    - name: service
+      type: string
+      default: orders-api
+    - name: environment
+      type: string
+    - name: image-tag
+      type: string
+  workspaces:
+    - name: source
+    - name: kubeconfig
+  steps:
+    - name: helm-upgrade
+      image: alpine/helm:3.15.2
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: KUBECONFIG
+          value: $(workspaces.kubeconfig.path)/kubeconfig
+      script: |
+        #!/bin/sh
+        set -eu
+        helm upgrade --install "$(params.service)" "./charts/$(params.service)" \
+          --namespace "$(params.service)-$(params.environment)" --create-namespace \
+          --set image.tag="$(params.image-tag)" \
+          --values "./charts/$(params.service)/values-$(params.environment).yaml" \
+          --wait --timeout 10m

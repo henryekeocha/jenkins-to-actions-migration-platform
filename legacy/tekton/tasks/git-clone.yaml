@@ -1,0 +1,26 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+spec:
+  description: Minimal clone task. In a real cluster you would use the Tekton Hub git-clone task.
+  params:
+    - name: url
+      type: string
+    - name: revision
+      type: string
+      default: main
+  workspaces:
+    - name: output
+  results:
+    - name: commit
+      description: Short SHA of the checked-out revision
+  steps:
+    - name: clone
+      image: alpine/git:2.45.2
+      workingDir: $(workspaces.output.path)
+      script: |
+        #!/bin/sh
+        set -eu
+        git clone --depth 1 --branch "$(params.revision)" "$(params.url)" .
+        git rev-parse --short=12 HEAD | tr -d '\n' > "$(results.commit.path)"

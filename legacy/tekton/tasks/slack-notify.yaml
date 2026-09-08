@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: slack-notify
+spec:
+  description: Equivalent of the Jenkins post { success / failure } slackSend calls.
+  params:
+    - name: status
+      type: string
+      description: Aggregate status from $(tasks.status) — Succeeded, Failed, Completed or None
+    - name: pipeline-run
+      type: string
+    - name: webhook-secret
+      type: string
+      default: slack-webhook
+  steps:
+    - name: post
+      image: curlimages/curl:8.8.0
+      env:
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: $(params.webhook-secret)
+              key: url
+      script: |
+        #!/bin/sh
+        set -eu
+        case "$(params.status)" in
+          Succeeded) icon=":white_check_mark:" ;;
+          Failed)    icon=":x:" ;;
+          *)         icon=":warning:" ;;
+        esac
+        curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' \
+          --data "{\"text\": \"${icon} $(params.pipeline-run) $(params.status)\"}" \
+          "$SLACK_WEBHOOK_URL"

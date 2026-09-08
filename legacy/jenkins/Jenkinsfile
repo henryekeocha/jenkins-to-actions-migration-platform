@@ -1,0 +1,165 @@
+#!/usr/bin/env groovy
+// Legacy declarative pipeline for the "orders-api" service.
+//
+// This is the kind of Jenkinsfile the migration-analyzer is written against: it leans on a
+// shared library (`@Library('platform-shared')`), Docker-in-Docker agents, credential bindings,
+// a manual approval gate, parallel test stages and post-build notifications. Every one of those
+// maps to something different in GitHub Actions and the analyzer flags each of them.
+//
+// Shared library sources live under ./vars and ./src so the whole thing is self-contained.
+
+@Library('platform-shared@main') _
+
+pipeline {
+  agent {
+    docker {
+      image 'golang:1.22-bookworm'
+      args '-v /var/run/docker.sock:/var/run/docker.sock'
+      label 'linux && docker'
+    }
+  }
+
+  options {
+    timeout(time: 45, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+    disableConcurrentBuilds()
+    timestamps()
+    ansiColor('xterm')
+  }
+
+  triggers {
+    cron('H 2 * * 1-5')
+    pollSCM('H/5 * * * *')
+  }
+
+  parameters {
+    choice(name: 'ENVIRONMENT', choices: ['staging', 'production'], description: 'Deploy target')
+    booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip the test stage')
+    string(name: 'IMAGE_TAG_OVERRIDE', defaultValue: '', description: 'Use this tag instead of the git sha')
+  }
+
+  environment {
+    SERVICE_NAME   = 'orders-api'
+    REGISTRY       = 'ghcr.io/example-org'
+    GO_FLAGS       = '-mod=readonly'
+    IMAGE_TAG      = "${params.IMAGE_TAG_OVERRIDE ?: env.GIT_COMMIT.take(12)}"
+    SONAR_TOKEN    = credentials('sonarqube-token')
+    AWS_CREDS      = credentials('aws-deployer')   // AWS_CREDS_USR / AWS_CREDS_PSW
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        script {
+          env.GIT_SHORT = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
+        }
+        stash name: 'source', includes: '**/*', excludes: '.git/**'
+      }
+    }
+
+    stage('Build') {
+      steps {
+        sh 'go build ${GO_FLAGS} -o bin/${SERVICE_NAME} ./cmd/${SERVICE_NAME}'
+        archiveArtifacts artifacts: 'bin/**', fingerprint: true
+      }
+    }
+
+    stage('Test') {
+      when {
+        not { expression { return params.SKIP_TESTS } }
+      }
+      parallel {
+        stage('Unit') {
+          steps {
+            sh 'go test ${GO_FLAGS} -race -coverprofile=cover.out ./...'
+            junit allowEmptyResults: true, testResults: 'reports/junit-*.xml'
+          }
+        }
+        stage('Lint') {
+          steps {
+            sh 'golangci-lint run ./...'
+          }
+        }
+        stage('SAST') {
+          steps {
+            withSonarQubeEnv('sonar-prod') {
+              sh 'sonar-scanner -Dsonar.projectKey=${SERVICE_NAME}'
+            }
+          }
+        }
+      }
+    }
+
+    stage('Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'ghcr-push',
+                                          usernameVariable: 'REG_USER',
+                                          passwordVariable: 'REG_PASS')]) {
+          sh '''
+            echo "$REG_PASS" | docker login ${REGISTRY%%/*} -u "$REG_USER" --password-stdin
+            docker build -t ${REGISTRY}/${SERVICE_NAME}:${IMAGE_TAG} .
+            docker push ${REGISTRY}/${SERVICE_NAME}:${IMAGE_TAG}
+          '''
+        }
+      }
+    }
+
+    stage('Deploy staging') {
+      when { branch 'main' }
+      steps {
+        deployHelm(service: env.SERVICE_NAME, environment: 'staging', tag: env.IMAGE_TAG)
+        smokeTest(url: "https://staging.example.com/${SERVICE_NAME}/healthz")
+      }
+    }
+
+    stage('Approve production') {
+      when {
+        allOf {
+          branch 'main'
+          expression { return params.ENVIRONMENT == 'production' }
+        }
+      }
+      steps {
+        timeout(time: 24, unit: 'HOURS') {
+          input message: 'Promote to production?', ok: 'Deploy', submitter: 'release-managers'
+        }
+      }
+    }
+
+    stage('Deploy production') {
+      when {
+        allOf {
+          branch 'main'
+          expression { return params.ENVIRONMENT == 'production' }
+        }
+      }
+      steps {
+        lock(resource: 'production-deploy', inversePrecedence: true) {
+          milestone 100
+          deployHelm(service: env.SERVICE_NAME, environment: 'production', tag: env.IMAGE_TAG)
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs()
+    }
+    success {
+      slackSend channel: '#deploys', color: 'good',
+                message: "${SERVICE_NAME} ${IMAGE_TAG} ✅ ${env.BUILD_URL}"
+    }
+    failure {
+      slackSend channel: '#deploys', color: 'danger',
+                message: "${SERVICE_NAME} ${IMAGE_TAG} ❌ ${env.BUILD_URL}"
+      emailext subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+               body: "See ${env.BUILD_URL}", recipientProviders: [culprits()]
+    }
+    unstable {
+      slackSend channel: '#deploys', color: 'warning',
+                message: "${SERVICE_NAME} ${IMAGE_TAG} ⚠️ unstable ${env.BUILD_URL}"
+    }
+  }
+}
