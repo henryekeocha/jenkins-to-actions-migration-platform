@@ -1,0 +1,60 @@
+# CompositeResourceDefinition for an "artifact store": one S3 bucket plus an IAM role that can
+# read and write it. This is the Crossplane counterpart of infra/terraform/modules/artifact-store.
+#
+# Crossplane v2 (checked against v2.4 docs): XRDs are apiextensions.crossplane.io/v2, default
+# scope is Namespaced, and there are no claims. Teams create an ArtifactStore in their own
+# namespace and the composed managed resources land in the same namespace.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: artifactstores.platform.example.org
+spec:
+  scope: Namespaced
+  group: platform.example.org
+  names:
+    kind: ArtifactStore
+    plural: artifactstores
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [parameters]
+              properties:
+                parameters:
+                  type: object
+                  required: [region]
+                  properties:
+                    region:
+                      type: string
+                      description: AWS region for the bucket.
+                    versioning:
+                      type: boolean
+                      default: true
+                      description: Enable bucket versioning.
+                    trustedPrincipalArn:
+                      type: string
+                      description: >-
+                        IAM principal ARN allowed to assume the access role (a CI role, an EKS
+                        pod identity role). GitHub OIDC trust is added by the composition when
+                        githubRepository is set.
+                    githubRepository:
+                      type: string
+                      description: owner/repo allowed to assume the role via GitHub Actions OIDC.
+                    githubOidcProviderArn:
+                      type: string
+                      description: ARN of the account's GitHub OIDC provider; required with githubRepository.
+            status:
+              type: object
+              properties:
+                bucketName:
+                  type: string
+                bucketArn:
+                  type: string
+                roleArn:
+                  type: string

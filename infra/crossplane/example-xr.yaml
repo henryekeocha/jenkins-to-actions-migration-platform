@@ -1,0 +1,13 @@
+# What a team creates. Namespaced, no claim (Crossplane v2). Equivalent to infra/terraform/main.tf.
+apiVersion: platform.example.org/v1alpha1
+kind: ArtifactStore
+metadata:
+  name: orders-api-ci
+  namespace: orders-api
+  uid: 9d4f1c2e-5b3a-4e7d-8f10-2a6c1e0b7d55  # set by the API server; shown for hack/render-composition.py
+spec:
+  parameters:
+    region: eu-west-1
+    versioning: true
+    githubRepository: example-org/orders-api
+    githubOidcProviderArn: arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com

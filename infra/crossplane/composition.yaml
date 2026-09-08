@@ -1,0 +1,246 @@
+# Composition for ArtifactStore using the function pipeline (the only mode in Crossplane v2).
+#
+# Resources match infra/terraform/modules/artifact-store one for one: Bucket, BucketVersioning,
+# BucketServerSideEncryptionConfiguration, BucketPublicAccessBlock, IAM Role, Policy, and
+# RolePolicyAttachment. Managed resources use the namespaced `*.aws.m.upbound.io` API groups from
+# provider family v2 (provider-aws-s3 / provider-aws-iam v2.7.x) so they live next to the XR.
+#
+# Validated offline with `crossplane beta render` + `crossplane beta validate` (see README).
+# Never applied to a cluster.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: artifactstore-aws
+  labels:
+    provider: aws
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example.org/v1alpha1
+    kind: ArtifactStore
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        patchSets:
+          - name: region
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+          - name: bucket-name
+            patches:
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: metadata.name
+                    - fromFieldPath: metadata.uid
+                  strategy: string
+                  string:
+                    fmt: "%s-%s"
+                toFieldPath: metadata.annotations[crossplane.io/external-name]
+        resources:
+          # ------------------------------------------------------------------ S3
+          # The bucket name is <xr-name>-<xr-uid>: unique like Terraform's random suffix, but
+          # deterministic, so the IAM policy below can reference the ARN without waiting for
+          # status. It is set through the external-name annotation, which is how Crossplane
+          # names the cloud resource.
+          - name: bucket
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: Bucket
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  tags:
+                    managed-by: crossplane
+            patches:
+              - type: PatchSet
+                patchSetName: region
+              - type: PatchSet
+                patchSetName: bucket-name
+              - type: FromCompositeFieldPath
+                fromFieldPath: metadata.name
+                toFieldPath: spec.forProvider.tags.component
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.id
+                toFieldPath: status.bucketName
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.arn
+                toFieldPath: status.bucketArn
+
+          - name: bucket-versioning
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: BucketVersioning
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  bucketSelector:
+                    matchControllerRef: true
+                  # Singleton blocks are objects in the v2 (namespaced) provider CRDs, not
+                  # one-element lists as in the cluster-scoped v1beta1 API.
+                  versioningConfiguration:
+                    status: Enabled
+            patches:
+              - type: PatchSet
+                patchSetName: region
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.versioning
+                toFieldPath: spec.forProvider.versioningConfiguration.status
+                transforms:
+                  - type: map
+                    map:
+                      "true": Enabled
+                      "false": Suspended
+
+          - name: bucket-encryption
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: BucketServerSideEncryptionConfiguration
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  bucketSelector:
+                    matchControllerRef: true
+                  rule:
+                    - applyServerSideEncryptionByDefault:
+                        sseAlgorithm: AES256
+                      bucketKeyEnabled: true
+            patches:
+              - type: PatchSet
+                patchSetName: region
+
+          - name: bucket-public-access-block
+            base:
+              apiVersion: s3.aws.m.upbound.io/v1beta1
+              kind: BucketPublicAccessBlock
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  bucketSelector:
+                    matchControllerRef: true
+                  blockPublicAcls: true
+                  blockPublicPolicy: true
+                  ignorePublicAcls: true
+                  restrictPublicBuckets: true
+            patches:
+              - type: PatchSet
+                patchSetName: region
+
+          # ------------------------------------------------------------------ IAM
+          # IAM is global; no region. The trust policy is assembled from the XR parameters with
+          # a string transform, which is the Crossplane equivalent of aws_iam_policy_document.
+          - name: role
+            base:
+              apiVersion: iam.aws.m.upbound.io/v1beta1
+              kind: Role
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  maxSessionDuration: 3600
+                  tags:
+                    managed-by: crossplane
+                  assumeRolePolicy: |
+                    {"Version":"2012-10-17","Statement":[]}
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: metadata.name
+                toFieldPath: spec.forProvider.tags.component
+              - type: CombineFromComposite
+                policy:
+                  fromFieldPath: Optional
+                combine:
+                  variables:
+                    - fromFieldPath: spec.parameters.githubOidcProviderArn
+                    - fromFieldPath: spec.parameters.githubRepository
+                  strategy: string
+                  string:
+                    fmt: |
+                      {"Version":"2012-10-17","Statement":[{"Sid":"GitHubActionsOIDC","Effect":"Allow",
+                       "Principal":{"Federated":"%s"},"Action":"sts:AssumeRoleWithWebIdentity",
+                       "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"},
+                                    "StringLike":{"token.actions.githubusercontent.com:sub":"repo:%s:*"}}}]}
+                toFieldPath: spec.forProvider.assumeRolePolicy
+              - type: FromCompositeFieldPath
+                policy:
+                  fromFieldPath: Optional
+                fromFieldPath: spec.parameters.trustedPrincipalArn
+                toFieldPath: spec.forProvider.assumeRolePolicy
+                transforms:
+                  - type: string
+                    string:
+                      type: Format
+                      fmt: |
+                        {"Version":"2012-10-17","Statement":[{"Sid":"TrustedPrincipals","Effect":"Allow",
+                         "Principal":{"AWS":"%s"},"Action":"sts:AssumeRole"}]}
+              - type: ToCompositeFieldPath
+                fromFieldPath: status.atProvider.arn
+                toFieldPath: status.roleArn
+
+          - name: policy
+            base:
+              apiVersion: iam.aws.m.upbound.io/v1beta1
+              kind: Policy
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  tags:
+                    managed-by: crossplane
+                  policy: |
+                    {"Version":"2012-10-17","Statement":[]}
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: metadata.name
+                toFieldPath: spec.forProvider.tags.component
+              # S3 ARNs are deterministic (arn:aws:s3:::<name>), so the policy is built from the
+              # same name the bucket gets and does not have to wait for the bucket's status.
+              - type: CombineFromComposite
+                combine:
+                  variables:
+                    - fromFieldPath: metadata.name
+                    - fromFieldPath: metadata.uid
+                  strategy: string
+                  string:
+                    fmt: |
+                      {"Version":"2012-10-17","Statement":[
+                       {"Sid":"ListBucket","Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],
+                        "Resource":"arn:aws:s3:::%[1]s-%[2]s"},
+                       {"Sid":"ObjectReadWrite","Effect":"Allow",
+                        "Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload"],
+                        "Resource":"arn:aws:s3:::%[1]s-%[2]s/*"}]}
+                toFieldPath: spec.forProvider.policy
+
+          - name: role-policy-attachment
+            base:
+              apiVersion: iam.aws.m.upbound.io/v1beta1
+              kind: RolePolicyAttachment
+              spec:
+                providerConfigRef:
+                  kind: ClusterProviderConfig
+                  name: default
+                forProvider:
+                  roleSelector:
+                    matchControllerRef: true
+                  policyArnSelector:
+                    matchControllerRef: true
+
+    # Marks the XR Ready once every composed resource is Ready.
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready
