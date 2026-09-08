@@ -63,9 +63,11 @@ jobs:
           tag="$TAG"
           [ "$tag" = "$GITHUB_SHA" ] && tag="${GITHUB_SHA:0:12}"
           image="$(echo "$REGISTRY/$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')"
-          echo "image=$image:$tag" >> "$GITHUB_OUTPUT"
-          echo "name=$image" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=$image:$tag"
+            echo "name=$image"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
 

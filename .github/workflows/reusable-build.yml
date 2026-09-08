@@ -45,8 +45,10 @@ jobs:
       - id: meta
         shell: bash
         run: |
-          echo "short-sha=${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
-          echo "artifact-name=${{ inputs.service }}-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          {
+            echo "short-sha=${GITHUB_SHA:0:12}"
+            echo "artifact-name=${{ inputs.service }}-${GITHUB_SHA:0:12}"
+          } >> "$GITHUB_OUTPUT"
 
       - id: build
         uses: ./.github/actions/go-build
