@@ -1,0 +1,57 @@
+# RBAC for the workflow-notifier controller. Validate-only in this repo; never applied by CI.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workflow-notifier
+  namespace: argo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: workflow-notifier
+rules:
+  # Read workflows and record the notified phase as an annotation. No update, no delete.
+  - apiGroups: [argoproj.io]
+    resources: [workflows]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: workflow-notifier
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: workflow-notifier
+subjects:
+  - kind: ServiceAccount
+    name: workflow-notifier
+    namespace: argo
+---
+# Leader election needs a Lease in the controller's own namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow-notifier-leader-election
+  namespace: argo
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow-notifier-leader-election
+  namespace: argo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workflow-notifier-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: workflow-notifier
+    namespace: argo

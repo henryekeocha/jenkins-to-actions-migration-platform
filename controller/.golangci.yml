@@ -1,0 +1,28 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - unparam
+    - gocritic
+    - revive
+  exclusions:
+    rules:
+      # The DeepCopy helpers mirror kube-generated deepcopy code, which spells out the
+      # embedded field on purpose.
+      - path: api/v1alpha1/types.go
+        text: QF1008
+  settings:
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/henryekeocha/jenkins-to-actions-migration-platform
