@@ -1,0 +1,44 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Go
+controller/bin/
+controller/cover.out
+controller/testbin/
+*.test
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+
+# Node / Backstage
+node_modules/
+.yarn/
+
+# Env and editor
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
