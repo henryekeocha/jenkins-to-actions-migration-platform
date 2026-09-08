@@ -1,0 +1,10 @@
+extends: default
+rules:
+  line-length: {max: 140}
+  document-start: disable
+  truthy: {check-keys: false}
+  comments: {min-spaces-from-content: 1}
+  indentation: {spaces: 2, indent-sequences: consistent}
+ignore:
+  - backstage/template/skeleton/charts/
+  - backstage/template/skeleton/.github/
