@@ -1,0 +1,71 @@
+# Reusable workflow: unit tests and lint in parallel.
+#
+# Jenkins equivalent: `stage('Test') { parallel { Unit; Lint; SAST } }` with `junit` and the
+# `SKIP_TESTS` parameter. In Actions, parallelism is just separate jobs; there is no `parallel`
+# keyword. JUnit reports become uploaded artifacts (and optionally a job summary); Jenkins'
+# "unstable" result has no equivalent, a failing test fails the job.
+name: test (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        type: string
+        default: "1.22"
+      working-directory:
+        type: string
+        default: "."
+      skip-tests:
+        description: Mirrors the Jenkins SKIP_TESTS boolean parameter
+        type: boolean
+        default: false
+      golangci-lint-version:
+        type: string
+        default: v2.12.2
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    if: ${{ !inputs.skip-tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+      - name: go test
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          GOFLAGS: -mod=readonly
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          go test -race -coverprofile=cover.out -json ./... | tee reports/go-test.json
+      # junit allowEmptyResults: true, testResults: 'reports/junit-*.xml'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports-${{ github.run_id }}
+          path: |
+            ${{ inputs.working-directory }}/reports/
+            ${{ inputs.working-directory }}/cover.out
+          if-no-files-found: ignore
+
+  lint:
+    if: ${{ !inputs.skip-tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          working-directory: ${{ inputs.working-directory }}

@@ -1,0 +1,36 @@
+name: Smoke test
+description: >-
+  Poll a health endpoint until it returns 2xx. Port of legacy/jenkins/vars/smokeTest.groovy;
+  Jenkins `retry(n) { sleep; sh curl }` becomes a plain shell loop.
+inputs:
+  url:
+    description: URL to probe
+    required: true
+  attempts:
+    description: Number of attempts
+    required: false
+    default: "12"
+  delay-seconds:
+    description: Seconds between attempts
+    required: false
+    default: "10"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        DELAY: ${{ inputs.delay-seconds }}
+      run: |
+        set -uo pipefail
+        for i in $(seq 1 "$ATTEMPTS"); do
+          if curl --fail --silent --show-error --max-time 10 "$URL" > /dev/null; then
+            echo "healthy after $i attempt(s)"
+            exit 0
+          fi
+          echo "attempt $i/$ATTEMPTS failed, retrying in ${DELAY}s"
+          sleep "$DELAY"
+        done
+        echo "::error::$URL did not become healthy after $ATTEMPTS attempts"
+        exit 1

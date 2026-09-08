@@ -1,0 +1,121 @@
+# The migrated pipeline: what legacy/jenkins/Jenkinsfile becomes when it calls the reusable
+# workflows in this directory.
+#
+# This is an example caller. It is `workflow_dispatch` only because this repository does not
+# contain the orders-api service itself; in the service's own repo the `on:` block would be
+#
+#   on:
+#     push: { branches: [main] }
+#     pull_request:
+#     schedule: [{ cron: '0 2 * * 1-5' }]     # cron('H 2 * * 1-5') — no 'H' hash in Actions
+#
+# and `pollSCM` simply disappears (push events replace polling).
+name: orders-api pipeline (example)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deploy target (Jenkins ENVIRONMENT choice parameter)
+        type: choice
+        options: [staging, production]
+        default: staging
+      skip-tests:
+        description: Skip the test stage (Jenkins SKIP_TESTS)
+        type: boolean
+        default: false
+      image-tag-override:
+        description: Use this tag instead of the git sha (Jenkins IMAGE_TAG_OVERRIDE)
+        type: string
+        default: ""
+
+# options { disableConcurrentBuilds() }
+concurrency:
+  group: orders-api-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  SERVICE_NAME: orders-api
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      service: orders-api
+      go-version: "1.22"
+
+  test:
+    needs: build
+    uses: ./.github/workflows/reusable-test.yml
+    with:
+      go-version: "1.22"
+      skip-tests: ${{ inputs.skip-tests }}
+
+  image:
+    needs: [build, test]
+    # Jenkins `when { not { expression { SKIP_TESTS } } }` on Test means Image still ran when
+    # tests were skipped; `always()` + explicit result checks reproduce that.
+    if: ${{ always() && needs.build.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    uses: ./.github/workflows/reusable-image.yml
+    with:
+      service: orders-api
+      tag: ${{ inputs.image-tag-override || needs.build.outputs.short-sha }}
+
+  deploy-staging:
+    needs: image
+    if: ${{ always() && needs.image.result == 'success' && github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      service: orders-api
+      environment: staging
+      image-tag: ${{ inputs.image-tag-override || github.sha }}
+      health-url: https://staging.example.com/orders-api/healthz
+    secrets:
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+
+  # stage('Approve production') + stage('Deploy production'): the approval is the `production`
+  # environment's required-reviewers rule, and the 24h `timeout` around `input` is the
+  # environment's wait timer / the run's 30-day pending limit.
+  deploy-production:
+    needs: deploy-staging
+    if: ${{ always() && needs.deploy-staging.result == 'success' && inputs.environment == 'production' }}
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      service: orders-api
+      environment: production
+      image-tag: ${{ inputs.image-tag-override || github.sha }}
+      health-url: https://example.com/orders-api/healthz
+    secrets:
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+
+  # post { success / failure / unstable } -> one job that always runs and looks at the results.
+  notify:
+    needs: [build, test, image, deploy-staging, deploy-production]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: result
+        shell: bash
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          status=success
+          case "$RESULTS" in
+            *failure*)   status=failure ;;
+            *cancelled*) status=cancelled ;;
+          esac
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/notify-slack
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          status: ${{ steps.result.outputs.status }}
+          service: orders-api
+          image-tag: ${{ inputs.image-tag-override || github.sha }}

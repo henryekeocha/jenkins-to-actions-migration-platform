@@ -1,0 +1,65 @@
+# Reusable workflow: build a Go service and publish the binary as a workflow artifact.
+#
+# Jenkins equivalent: the `Checkout` + `Build` stages, `stash name: 'source'` and
+# `archiveArtifacts`. Tekton equivalent: the `clone` and `build` tasks sharing a workspace.
+name: build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: Service name; also the binary name
+        type: string
+        required: true
+      package:
+        description: Go package to build
+        type: string
+        default: ./cmd/${{ inputs.service }}
+      go-version:
+        type: string
+        default: "1.22"
+      working-directory:
+        type: string
+        default: "."
+    outputs:
+      artifact-name:
+        description: Name of the uploaded binary artifact
+        value: ${{ jobs.build.outputs.artifact-name }}
+      short-sha:
+        description: First 12 characters of the commit SHA (the Jenkins IMAGE_TAG default)
+        value: ${{ jobs.build.outputs.short-sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact-name: ${{ steps.meta.outputs.artifact-name }}
+      short-sha: ${{ steps.meta.outputs.short-sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: meta
+        shell: bash
+        run: |
+          echo "short-sha=${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=${{ inputs.service }}-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: ./.github/actions/go-build
+        with:
+          go-version: ${{ inputs.go-version }}
+          package: ${{ inputs.package }}
+          output: bin/${{ inputs.service }}
+          working-directory: ${{ inputs.working-directory }}
+
+      # archiveArtifacts artifacts: 'bin/**', fingerprint: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact-name }}
+          path: ${{ steps.build.outputs.binary }}
+          if-no-files-found: error
+          retention-days: 30

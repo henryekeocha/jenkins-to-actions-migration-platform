@@ -1,0 +1,61 @@
+name: Helm deploy
+description: >-
+  helm upgrade --install into <service>-<environment>. This is the shared-library step
+  `deployHelm` from legacy/jenkins/vars/deployHelm.groovy. The kubeconfig arrives as an
+  environment-scoped secret from the calling workflow instead of a Jenkins file credential.
+inputs:
+  service:
+    description: Service / chart name
+    required: true
+  environment:
+    description: Target environment (staging, production)
+    required: true
+  image-tag:
+    description: Image tag to deploy
+    required: true
+  kubeconfig:
+    description: Base64-encoded kubeconfig for the target cluster
+    required: true
+  chart-path:
+    description: Path to the chart
+    required: false
+    default: ""
+  helm-version:
+    description: Helm version to install
+    required: false
+    default: v3.15.2
+runs:
+  using: composite
+  steps:
+    - uses: azure/setup-helm@v5
+      with:
+        version: ${{ inputs.helm-version }}
+    - name: Write kubeconfig
+      shell: bash
+      env:
+        KUBECONFIG_B64: ${{ inputs.kubeconfig }}
+      run: |
+        set -euo pipefail
+        umask 077
+        mkdir -p "$RUNNER_TEMP/kube"
+        printf '%s' "$KUBECONFIG_B64" | base64 -d > "$RUNNER_TEMP/kube/config"
+        echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+    - name: helm upgrade --install
+      shell: bash
+      env:
+        SERVICE: ${{ inputs.service }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        CHART_PATH: ${{ inputs.chart-path }}
+      run: |
+        set -euo pipefail
+        chart="${CHART_PATH:-./charts/$SERVICE}"
+        helm upgrade --install "$SERVICE" "$chart" \
+          --namespace "$SERVICE-$ENVIRONMENT" --create-namespace \
+          --set "image.tag=$IMAGE_TAG" \
+          --values "$chart/values-$ENVIRONMENT.yaml" \
+          --wait --timeout 10m
+    - name: Remove kubeconfig
+      if: always()
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/kube"

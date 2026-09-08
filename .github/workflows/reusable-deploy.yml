@@ -1,0 +1,63 @@
+# Reusable workflow: deploy a service to an environment with Helm, then smoke test it.
+#
+# Jenkins equivalents, and where each one went:
+#   - `input message: 'Promote to production?'`  -> the `environment:` on the job. Required
+#     reviewers configured on the GitHub environment are the approval gate; there is no
+#     `submitter:` in the workflow file, it lives in repo settings.
+#   - `lock(resource: 'production-deploy')`      -> `concurrency:` with cancel-in-progress false.
+#   - `milestone`                                -> no equivalent; concurrency queues runs in order.
+#   - `withCredentials([file('kubeconfig-…')])`  -> an environment-scoped secret (KUBECONFIG_B64).
+#   - `deployHelm(...)` shared-library step      -> .github/actions/helm-deploy composite action.
+#   - `smokeTest(...)`                            -> .github/actions/smoke-test composite action.
+name: deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        type: string
+        required: true
+      environment:
+        description: GitHub environment name; also the values-<environment>.yaml suffix
+        type: string
+        required: true
+      image-tag:
+        type: string
+        required: true
+      health-url:
+        description: URL to smoke test after the rollout; skipped if empty
+        type: string
+        default: ""
+    secrets:
+      KUBECONFIG_B64:
+        description: Base64-encoded kubeconfig for the target cluster
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.service }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.health-url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/helm-deploy
+        with:
+          service: ${{ inputs.service }}
+          environment: ${{ inputs.environment }}
+          image-tag: ${{ inputs.image-tag }}
+          kubeconfig: ${{ secrets.KUBECONFIG_B64 }}
+
+      - uses: ./.github/actions/smoke-test
+        if: ${{ inputs.health-url != '' }}
+        with:
+          url: ${{ inputs.health-url }}

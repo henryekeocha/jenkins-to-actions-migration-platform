@@ -1,0 +1,39 @@
+name: Notify Slack
+description: >-
+  Post a build result to a Slack incoming webhook. Replaces the Jenkins `post { success /
+  failure / unstable { slackSend ... } }` block; the caller passes the aggregate result and
+  runs this step with `if: always()`.
+inputs:
+  webhook-url:
+    description: Slack incoming webhook URL (pass a secret)
+    required: true
+  status:
+    description: success, failure, cancelled or skipped
+    required: true
+  service:
+    description: Service name for the message
+    required: true
+  image-tag:
+    description: Image tag for the message
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        STATUS: ${{ inputs.status }}
+        SERVICE: ${{ inputs.service }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        case "$STATUS" in
+          success)   icon=":white_check_mark:" ;;
+          failure)   icon=":x:" ;;
+          cancelled) icon=":no_entry_sign:" ;;
+          *)         icon=":warning:" ;;
+        esac
+        payload=$(printf '{"text":"%s %s %s %s <%s|run>"}' "$icon" "$SERVICE" "$IMAGE_TAG" "$STATUS" "$RUN_URL")
+        curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' --data "$payload" "$WEBHOOK_URL"
