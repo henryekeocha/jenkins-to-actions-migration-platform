@@ -1,0 +1,233 @@
+# Argo WorkflowTemplate for the orders-api build-test-deploy DAG.
+#
+# Same shape as legacy/tekton/pipeline.yaml and the GitHub Actions pipeline, for the parts of a
+# pipeline that are better run in-cluster (workload identity, cluster-internal endpoints, large
+# caches). A GitHub Actions job can submit a Workflow from this template with
+# `argo submit --from workflowtemplate/orders-api-build-test-deploy` and the workflow-notifier
+# controller (../../controller) posts back when it finishes.
+#
+# Field names checked against Argo Workflows v4.1.2 docs: dag.tasks[].depends (enhanced depends,
+# not mixed with `dependencies`), dag.failFast, templates[].container / script, inputs.parameters,
+# outputs.parameters with valueFrom.path, workflowTemplateRef from a Workflow.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: orders-api-build-test-deploy
+  labels:
+    app.kubernetes.io/part-of: orders-api
+spec:
+  entrypoint: pipeline
+  serviceAccountName: orders-api-pipeline
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  podGC:
+    strategy: OnWorkflowSuccess
+  activeDeadlineSeconds: 2700  # Jenkins options { timeout(45, MINUTES) }
+
+  arguments:
+    parameters:
+      - name: repo-url
+        value: https://github.com/example-org/orders-api.git
+      - name: revision
+        value: main
+      - name: image
+        value: ghcr.io/example-org/orders-api
+      - name: environment
+        value: staging
+        enum: [staging, production]
+      - name: skip-tests
+        value: "false"
+        enum: ["true", "false"]
+
+  volumeClaimTemplates:
+    - metadata:
+        name: source
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+
+  templates:
+    - name: pipeline
+      dag:
+        failFast: true
+        tasks:
+          - name: clone
+            template: git-clone
+            arguments:
+              parameters:
+                - name: url
+                  value: "{{workflow.parameters.repo-url}}"
+                - name: revision
+                  value: "{{workflow.parameters.revision}}"
+
+          - name: build
+            depends: clone
+            template: go-build
+
+          # Jenkins `parallel { Unit; Lint }`: two tasks with the same dependency.
+          - name: unit-test
+            depends: build
+            when: "{{workflow.parameters.skip-tests}} != true"
+            template: go-test
+
+          - name: lint
+            depends: build
+            when: "{{workflow.parameters.skip-tests}} != true"
+            template: go-lint
+
+          # Skipped tasks count as satisfied so the image still builds when tests are skipped,
+          # mirroring the Jenkins `when { not { SKIP_TESTS } }` semantics.
+          - name: image
+            depends: "(unit-test.Succeeded || unit-test.Skipped) && (lint.Succeeded || lint.Skipped)"
+            template: kaniko-build-push
+            arguments:
+              parameters:
+                - name: image
+                  value: "{{workflow.parameters.image}}:{{tasks.clone.outputs.parameters.commit}}"
+
+          - name: deploy-staging
+            depends: image
+            template: helm-deploy
+            arguments:
+              parameters:
+                - name: environment
+                  value: staging
+                - name: image-tag
+                  value: "{{tasks.clone.outputs.parameters.commit}}"
+
+          # Argo has `suspend` for a manual gate, unlike Tekton. It is used here for the
+          # production promotion; `argo resume` continues it.
+          - name: approve-production
+            depends: deploy-staging
+            when: "{{workflow.parameters.environment}} == production"
+            template: approval
+
+          - name: deploy-production
+            depends: approve-production
+            when: "{{workflow.parameters.environment}} == production"
+            template: helm-deploy
+            arguments:
+              parameters:
+                - name: environment
+                  value: production
+                - name: image-tag
+                  value: "{{tasks.clone.outputs.parameters.commit}}"
+
+    # ---------------------------------------------------------------- task templates
+    - name: git-clone
+      inputs:
+        parameters:
+          - name: url
+          - name: revision
+      outputs:
+        parameters:
+          - name: commit
+            valueFrom:
+              path: /workspace/.commit
+      container:
+        image: alpine/git:2.45.2
+        workingDir: /workspace
+        command: [sh, -ec]
+        args:
+          - |
+            git clone --depth 1 --branch "{{inputs.parameters.revision}}" "{{inputs.parameters.url}}" .
+            git rev-parse --short=12 HEAD | tr -d '\n' > /workspace/.commit
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+
+    - name: go-build
+      container:
+        image: golang:1.22-bookworm
+        workingDir: /workspace
+        env:
+          - name: GOFLAGS
+            value: -mod=readonly
+        command: [sh, -ec]
+        args: ["go build -o bin/orders-api ./cmd/orders-api"]
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+
+    - name: go-test
+      container:
+        image: golang:1.22-bookworm
+        workingDir: /workspace
+        command: [sh, -ec]
+        args: ["go test -race -coverprofile=cover.out ./..."]
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+
+    - name: go-lint
+      container:
+        image: golangci/golangci-lint:v1.59
+        workingDir: /workspace
+        command: [sh, -ec]
+        args: ["golangci-lint run ./..."]
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+
+    - name: kaniko-build-push
+      inputs:
+        parameters:
+          - name: image
+      container:
+        image: gcr.io/kaniko-project/executor:v1.23.2
+        args:
+          - --dockerfile=/workspace/Dockerfile
+          - --context=dir:///workspace
+          - --destination={{inputs.parameters.image}}
+        env:
+          - name: DOCKER_CONFIG
+            value: /kaniko/.docker
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+          - name: docker-config
+            mountPath: /kaniko/.docker
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: ghcr-push
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+
+    - name: helm-deploy
+      inputs:
+        parameters:
+          - name: environment
+          - name: image-tag
+          - name: service
+            value: orders-api
+      container:
+        image: alpine/helm:3.15.2
+        workingDir: /workspace
+        env:
+          - name: KUBECONFIG
+            value: /etc/kube/config
+        command: [sh, -ec]
+        args:
+          - |
+            helm upgrade --install "{{inputs.parameters.service}}" "./charts/{{inputs.parameters.service}}" \
+              --namespace "{{inputs.parameters.service}}-{{inputs.parameters.environment}}" --create-namespace \
+              --set image.tag="{{inputs.parameters.image-tag}}" \
+              --values "./charts/{{inputs.parameters.service}}/values-{{inputs.parameters.environment}}.yaml" \
+              --wait --timeout 10m
+        volumeMounts:
+          - name: source
+            mountPath: /workspace
+          - name: kubeconfig
+            mountPath: /etc/kube
+            readOnly: true
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: "kubeconfig-{{inputs.parameters.environment}}"
+
+    - name: approval
+      suspend: {}

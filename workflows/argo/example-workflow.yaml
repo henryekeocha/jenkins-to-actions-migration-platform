@@ -1,0 +1,19 @@
+# Submitting the template: what a GitHub Actions job would `kubectl create -f` (or `argo submit
+# --from workflowtemplate/orders-api-build-test-deploy -p ...`). Arguments here override the
+# template defaults.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: orders-api-
+  namespace: ci
+  labels:
+    app: orders-api
+spec:
+  workflowTemplateRef:
+    name: orders-api-build-test-deploy
+  arguments:
+    parameters:
+      - name: revision
+        value: 3f2a1c9d8e7b
+      - name: environment
+        value: staging
