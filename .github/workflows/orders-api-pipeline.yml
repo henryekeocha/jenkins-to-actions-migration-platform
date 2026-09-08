@@ -66,13 +66,13 @@ jobs:
       tag: ${{ inputs.image-tag-override || needs.build.outputs.short-sha }}
 
   deploy-staging:
-    needs: image
+    needs: [build, image]
     if: ${{ always() && needs.image.result == 'success' && github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/reusable-deploy.yml
     with:
       service: orders-api
       environment: staging
-      image-tag: ${{ inputs.image-tag-override || github.sha }}
+      image-tag: ${{ inputs.image-tag-override || needs.build.outputs.short-sha }}
       health-url: https://staging.example.com/orders-api/healthz
     secrets:
       KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
@@ -81,13 +81,13 @@ jobs:
   # environment's required-reviewers rule, and the 24h `timeout` around `input` is the
   # environment's wait timer / the run's 30-day pending limit.
   deploy-production:
-    needs: deploy-staging
+    needs: [build, deploy-staging]
     if: ${{ always() && needs.deploy-staging.result == 'success' && inputs.environment == 'production' }}
     uses: ./.github/workflows/reusable-deploy.yml
     with:
       service: orders-api
       environment: production
-      image-tag: ${{ inputs.image-tag-override || github.sha }}
+      image-tag: ${{ inputs.image-tag-override || needs.build.outputs.short-sha }}
       health-url: https://example.com/orders-api/healthz
     secrets:
       KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
@@ -118,4 +118,4 @@ jobs:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           status: ${{ steps.result.outputs.status }}
           service: orders-api
-          image-tag: ${{ inputs.image-tag-override || github.sha }}
+          image-tag: ${{ inputs.image-tag-override || needs.build.outputs.short-sha }}
